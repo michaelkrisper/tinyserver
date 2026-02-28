@@ -9,3 +9,6 @@
 
 # Caches
 .cache/
+
+# Test Tools
+bombardier.exe
