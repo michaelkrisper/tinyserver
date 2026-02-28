@@ -20,7 +20,7 @@ Tested using the professional [Bombardier](https://github.com/codesenberg/bombar
 * 🐍 **Python (`http.server`)**: ~4 RPS (Frequent timeouts/drops under load, 1700+ failed requests)
 * 🚀 **Tiny C Web Server**: **~3,380 RPS Max Output** (0 failed requests, 0 latency spikes, 100% stability)
 
-*Note: On native Linux without loopback limitations, `pthread_rwlock` scales easily past 40,000+ RPS.*
+> **Hardware Note:** These specific Windows loopback benchmarks were run on an older, slow laptop. On modern standard hardware or a native Linux environment (which lacks the strict Windows loopback connection bottlenecks), performance easily scales **past 40,000+ RPS**.
 
 ## 🛠️ Usage
 
