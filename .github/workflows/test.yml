@@ -20,7 +20,7 @@ jobs:
       - name: Build Server
         run: make
       - name: Run Background Server
-        run: ./server &
+        run: ./server 127.0.0.1 &
       - name: Wait for Server
         run: sleep 5
       - name: Run Tests
@@ -41,7 +41,7 @@ jobs:
       - name: Build Server
         run: ./build.bat
       - name: Run Background Server
-        run: Start-Process -NoNewWindow -FilePath ".\server.exe"
+        run: Start-Process -NoNewWindow -FilePath ".\server.exe" -ArgumentList "127.0.0.1"
       - name: Wait for Server
         run: Start-Sleep -Seconds 10
       - name: Run Tests

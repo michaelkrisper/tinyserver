@@ -215,8 +215,13 @@ void handle_client(SOCKET client) {
   closesocket(client);
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   os_net_init();
+
+  const char *bind_ip = "0.0.0.0";
+  if (argc > 1) {
+    bind_ip = argv[1];
+  }
 
   RWLOCK_INIT();
   update_cache();
@@ -227,18 +232,18 @@ int main() {
 
   struct sockaddr_in addr;
   addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = INADDR_ANY;
+  addr.sin_addr.s_addr = inet_addr(bind_ip);
   addr.sin_port = htons(PORT);
 
   if (bind(server, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-    printf("Bind failed. Port %d maybe in use?\n", PORT);
+    printf("Bind failed on %s. Port %d maybe in use?\n", bind_ip, PORT);
     return 1;
   }
 
   if (listen(server, SOMAXCONN) == SOCKET_ERROR)
     return 1;
 
-  printf("Tiny C Web Server listening on http://localhost:%d\n", PORT);
+  printf("Tiny C Web Server listening on http://%s:%d\n", bind_ip, PORT);
   printf("Press Ctrl+C to exit.\n");
 
   while (1) {
