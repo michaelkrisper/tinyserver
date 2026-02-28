@@ -16,6 +16,7 @@ A minimalist web server designed to serve a single file (`index.html`) directly 
 ## Benchmarks
 Load test results using [Bombardier](https://github.com/codesenberg/bombardier) (100 concurrent connections):
 - **Python (`http.server`)**: ~4 RPS
+- **Node.js (Standard `http`)**: ~650 RPS (Varies by load)
 - **TinyWebServer**: ~3,380 RPS
 
 *Note: Benchmarks were performed on an older laptop. Performance is higher on modern hardware.*
