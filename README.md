@@ -20,7 +20,7 @@ In a harsh 100-concurrent-connection stress test over localhost:
 ## 🛠️ Usage
 
 ### Windows (MSVC)
-Simply run the included build script from a Developer Command Prompt:
+Simply run the included build script from a Developer Command Prompt. It will automatically find `cl.exe`, `gcc`, or `clang` and compile the optimal binary:
 ```bat
 build.bat
 ```
@@ -29,9 +29,18 @@ Then start the server:
 .\server.exe
 ```
 
-### Linux / macOS (GCC)
+### Linux / macOS (GCC and Make)
+If you have Make installed, building and testing is completely automated:
 ```bash
-gcc server.c -o server -lpthread
+make          # Compiles the server
+make bench    # Runs the high-performance stress test (requires Python 3)
+make test     # Runs the ETag caching test (requires Python 3)
+make clean    # Removes build artifacts
+```
+
+Or manually:
+```bash
+gcc -O3 -Wall -Wextra -pthread -o server server.c -lpthread
 ./server
 ```
 
