@@ -1,0 +1,57 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Linux Binary
+        run: gcc -O3 -o server-linux server.c -lpthread
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux
+          path: server-linux
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build Windows Binary
+        run: cl.exe /O2 /Fe:server-windows.exe server.c Ws2_32.lib
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-windows
+          path: server-windows.exe
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Linux Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: server-linux
+      - name: Download Windows Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: server-windows
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Tiny C Server v1.0
+          files: |
+            server-linux
+            server-windows.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
