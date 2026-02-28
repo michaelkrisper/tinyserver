@@ -10,7 +10,7 @@ A minimalist web server designed to serve a single file (`index.html`) directly 
 - **Concurrency**: Uses `SRWLOCK` (Windows) or `pthread_rwlock` (Linux) for thread-safe parallel access.
 - **Cache Support**: Implements ETags and `304 Not Modified` responses.
 - **Small Footprint**: Binary size is approximately 12KB (Windows).
-- **Fast Path**: Returns `204 No Content` for `/favicon.ico` requests.
+- **Favicon Handling**: Returns `204 No Content` for `/favicon.ico` requests.
 - **Cross-Platform**: Supports Windows (MSVC) and Linux/macOS (GCC/Make).
 
 ## Benchmarks
