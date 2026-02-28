@@ -1,0 +1,43 @@
+name: Run Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Build Server
+        run: make
+      - name: Run Background Server
+        run: ./server &
+      - name: Wait for Server
+        run: sleep 2
+      - name: Run Tests
+        run: make test
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Build Server
+        run: ./build.bat
+      - name: Run Background Server
+        run: Start-Process -NoNewWindow -FilePath ".\server.exe"
+      - name: Wait for Server
+        run: Start-Sleep -Seconds 2
+      - name: Run Tests
+        run: python tests/test.py
