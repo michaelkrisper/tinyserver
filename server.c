@@ -113,9 +113,21 @@ void os_start_client_thread(SOCKET client) {
 
 #endif
 
+#ifdef _WIN32
+#define STAT_STR struct _stat
+#define STAT_FUNC _stat
+#else
+#define STAT_STR struct stat
+#define STAT_FUNC stat
+static int fopen_s(FILE **f, const char *name, const char *mode) {
+  *f = fopen(name, mode);
+  return *f ? 0 : -1;
+}
+#endif
+
 void update_cache() {
-  struct _stat st;
-  if (_stat(FILE_NAME, &st) == 0) {
+  STAT_STR st;
+  if (STAT_FUNC(FILE_NAME, &st) == 0) {
     int needs_update = 0;
 
     READ_LOCK();
