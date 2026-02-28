@@ -20,9 +20,9 @@ clean:
 	@echo "Clean complete."
 
 bench:
-	@echo "Running Benchmark Suite..."
-	python3 tests/bench.py
+	@echo "Running Professional Benchmark (Bombardier)..."
+	python3 tests/bench_bombardier.py
 
 test:
 	@echo "Running ETag Cache Tests..."
-	python3 tests/test.py
+	SERVER_URL="http://127.0.0.1:80" python3 tests/test.py

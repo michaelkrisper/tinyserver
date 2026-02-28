@@ -2,7 +2,9 @@ import unittest
 import urllib.request
 import urllib.error
 
-URL = "http://localhost:80"
+import os
+
+URL = os.environ.get("SERVER_URL", "http://localhost:80")
 
 class TestTinyServer(unittest.TestCase):
     def test_01_get_root(self):
