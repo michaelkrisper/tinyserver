@@ -1,7 +1,7 @@
 @echo off
 setlocal
 echo =======================================
-echo Compiling Tiny C Web Server
+echo Compiling TinyWebServer
 echo =======================================
 
 REM Überprüfen, ob gcc verfügbar ist

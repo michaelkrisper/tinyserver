@@ -1,4 +1,4 @@
-# Tiny C Web Server - Makefile
+# TinyWebServer - Makefile
 
 CC ?= gcc
 CFLAGS = -O3 -Wall -Wextra -pthread
