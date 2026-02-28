@@ -1,17 +1,17 @@
-# 🚀 Tiny C Web Server
+# 🚀 TinyWebServer
 
-![Build and Release](https://github.com/michaelkrisper/tinyserver/actions/workflows/release.yml/badge.svg)
-![Run Tests](https://github.com/michaelkrisper/tinyserver/actions/workflows/test.yml/badge.svg)
+![Build and Release](https://github.com/michaelkrisper/TinyWebServer/actions/workflows/release.yml/badge.svg)
+![Build Verification](https://github.com/michaelkrisper/TinyWebServer/actions/workflows/test.yml/badge.svg)
 
-A brutally minimalist, ultra-high-performance C Web Server. 
+A brutally minimalist, ultra-high-performance web server. 
 
-Built specifically to serve a single file (`index.html`) out of RAM with face-melting speed. Perfect for microcontrollers, embedded systems, or as an extremely lightweight fallback/maintenance server.
+Built specifically to serve a single file (`index.html`) using a high-efficiency caching mechanism with face-melting speed. Perfect for microcontrollers, embedded systems, or as an extremely lightweight fallback/maintenance server.
 
 ## ✨ Features
-* **Zero-Copy RAM Caching:** The file is held in a 2MB pre-allocated RAM buffer. Read operations from clients never hit the disk.
+* **Zero-Copy Static Caching:** The file is held in a 2MB pre-allocated memory buffer. Read operations from clients never hit the disk.
 * **Massive Concurrency:** Utilizes OS-level lockless `SRWLOCK` on Windows (and `pthread_rwlock` on POSIX) to allow thousands of clients to read from the cache simultaneously without blocking.
 * **Smart ETags & Caching:** Fully implements `HTTP 304 Not Modified` via computed ETags to completely avoid sending data to returning visitors, drastically saving bandwidth.
-* **Minimalist Footprint:** The compiled Windows executable is ~12 Kilobytes. RAM usage is completely static.
+* **Minimalist Footprint:** The compiled Windows executable is ~12 Kilobytes. Memory usage is completely static.
 * **Zero 404 Overhead:** Features a hardcoded, zero-payload `204 No Content` fast-path for `/favicon.ico` to keep logs clean and reduce network overhead from aggressive browsers.
 * **Cross-Platform:** Compiles on Windows (MSVC/Winsock) and UNIX/macOS (GCC/POSIX).
 
