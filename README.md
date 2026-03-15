@@ -8,12 +8,12 @@ A minimalist static file server written in C.
 ## Features
 - **Any file type**: Serves HTML, CSS, JS, images, fonts, video, audio, ZIP, and more (20+ MIME types)
 - **HTTP keep-alive**: connections are reused across requests — no TCP handshake per request
-- **mtime cache**: files cached in memory, reloaded only on change (up to 64 entries, 1s re-check interval)
+- **mtime cache**: files cached in memory, reloaded only on change (up to 64 entries, 10s re-check interval)
 - **Zero-copy cache hits**: serves directly from cached buffer under read lock — no malloc/memcpy per request
 - **Thread pool**: 128 pre-created workers — queue-based (Windows/macOS) or SO_REUSEPORT per-worker sockets (Linux, no shared queue)
 - **CLI arguments**: configurable port and serve directory
 - **Directory traversal protection**: `..` in paths returns 403
-- **Small footprint**: ~12 KB binary (Windows)
+- **Small footprint**: ~180 KB binary (Windows)
 - **Cross-platform**: Windows (MSVC/GCC/Clang) and Linux/macOS (GCC)
 
 ## Usage
@@ -41,16 +41,16 @@ make
 
 ## Benchmarks
 
-Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.6 release binary):
+Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.7 release binary):
 
 | Endpoint      | Req/sec  | Latency avg | p99      | Throughput  |
 |---------------|----------|-------------|----------|-------------|
-| `/`           | ~54,800  | 1.8 ms      | 16.8 ms  | 164 MB/s    |
-| `/index.html` | ~56,400  | 1.7 ms      | 16.8 ms  | 170 MB/s    |
+| `/`           | ~54,000  | 1.8 ms      | 16.8 ms  | 162 MB/s    |
+| `/index.html` | ~53,000  | 1.9 ms      | 16.9 ms  | 159 MB/s    |
 
-**+18% over v3.5** (47,900 → 56,400 RPS). Scatter-gather send (`WSASend`/`writev`) merged header + body into one syscall. Shared clock (`g_now`) eliminated a `time()` syscall per request. Single-pass request parser replaced 6+ separate buffer scans.
+Roughly on par with v3.6 (~56,400 RPS). v3.7 adds HTTP compliance features — `Date:` header (RFC 7231), `Last-Modified:` header, and `304 Not Modified` responses via `If-Modified-Since` — with no measurable throughput cost. Linux gains `TCP_DEFER_ACCEPT` to skip waking workers until request data arrives.
 
-### Resource usage (v3.6, Windows, 4-core machine)
+### Resource usage (v3.7, Windows, 4-core machine)
 
 | Metric                        | Value           |
 |-------------------------------|-----------------|
