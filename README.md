@@ -10,7 +10,7 @@ A minimalist static file server written in C.
 - **HTTP keep-alive**: connections are reused across requests — no TCP handshake per request
 - **mtime cache**: files cached in memory, reloaded only on change (up to 64 entries, 1s re-check interval)
 - **Zero-copy cache hits**: serves directly from cached buffer under read lock — no malloc/memcpy per request
-- **Thread pool**: 128 pre-created workers, ring-buffer queue (512 slots) — no per-request thread creation
+- **Thread pool**: 128 pre-created workers — queue-based (Windows/macOS) or SO_REUSEPORT per-worker sockets (Linux, no shared queue)
 - **CLI arguments**: configurable port and serve directory
 - **Directory traversal protection**: `..` in paths returns 403
 - **Small footprint**: ~12 KB binary (Windows)
@@ -41,16 +41,16 @@ make
 
 ## Benchmarks
 
-Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.5 release binary):
+Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.6 release binary):
 
 | Endpoint      | Req/sec  | Latency avg | p99      | Throughput  |
 |---------------|----------|-------------|----------|-------------|
-| `/`           | ~47,900  | 2.0 ms      | 17.2 ms  | 144 MB/s    |
-| `/index.html` | ~33,300  | 3.0 ms      | 15.9 ms  | 99 MB/s     |
+| `/`           | ~54,800  | 1.8 ms      | 16.8 ms  | 164 MB/s    |
+| `/index.html` | ~56,400  | 1.7 ms      | 16.8 ms  | 170 MB/s    |
 
-**+42% over v3.4** (33,700 → 47,900 RPS). Pre-cached response headers eliminated `snprintf`/`strlen` and the header `send()` call on every cache hit. Atomic `last_checked` removed the write-lock upgrade in the mtime-check path. `TCP_NODELAY` and removing `memset` cut per-request overhead further.
+**+18% over v3.5** (47,900 → 56,400 RPS). Scatter-gather send (`WSASend`/`writev`) merged header + body into one syscall. Shared clock (`g_now`) eliminated a `time()` syscall per request. Single-pass request parser replaced 6+ separate buffer scans.
 
-### Resource usage (v3.5, Windows, 4-core machine)
+### Resource usage (v3.6, Windows, 4-core machine)
 
 | Metric                        | Value           |
 |-------------------------------|-----------------|
@@ -60,7 +60,7 @@ Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 �
 
 The server is nearly CPU-idle at rest and uses under 6 MB of RAM with no files cached. Under 100-connection benchmark load it consumes about one CPU core out of four.
 
-**Binary size**: ~180 KB (Windows, MSVC release build)
+**Binary size**: ~183 KB (Windows, MSVC release build)
 
 ### Running the benchmark yourself
 ```bash
