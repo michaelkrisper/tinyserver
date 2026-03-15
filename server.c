@@ -9,8 +9,8 @@
 #define MAX_FILE_SIZE (10 * 1024 * 1024)
 #define CACHE_CAP            64
 #define MTIME_CHECK_INTERVAL  1   /* seconds between mtime re-checks */
-#define POOL_SIZE     32
-#define QUEUE_CAP     256
+#define POOL_SIZE     128
+#define QUEUE_CAP     512
 
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
