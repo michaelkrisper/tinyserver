@@ -10,10 +10,11 @@ A minimalist static file server written in C.
 - **HTTP keep-alive**: connections are reused across requests — no TCP handshake per request
 - **mtime cache**: files cached in memory, reloaded only on change (up to 64 entries, 10s re-check interval)
 - **Zero-copy cache hits**: serves directly from cached buffer under read lock — no malloc/memcpy per request
-- **Thread pool**: 128 pre-created workers — queue-based (Windows/macOS) or SO_REUSEPORT per-worker sockets (Linux, no shared queue)
+- **Async I/O**: IOCP on Windows, io_uring on Linux (kernel 6.1+ ring optimizations), kqueue on macOS/BSD — threads never block on individual recv/send
+- **Thread pool**: 128 pre-created workers; Linux and macOS use SO_REUSEPORT per-worker sockets (no shared queue)
 - **CLI arguments**: configurable port and serve directory
 - **Directory traversal protection**: `..` in paths returns 403
-- **Small footprint**: ~180 KB binary (Windows)
+- **Small footprint**: ~183 KB binary (Windows)
 - **Cross-platform**: Windows (MSVC/GCC/Clang) and Linux/macOS (GCC)
 
 ## Usage
@@ -48,7 +49,7 @@ Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 �
 | `/`           | ~54,000  | 1.8 ms      | 16.8 ms  | 162 MB/s    |
 | `/index.html` | ~53,000  | 1.9 ms      | 16.9 ms  | 159 MB/s    |
 
-Roughly on par with v3.6 (~56,400 RPS). v3.7 adds HTTP compliance features — `Date:` header (RFC 7231), `Last-Modified:` header, and `304 Not Modified` responses via `If-Modified-Since` — with no measurable throughput cost. Linux gains `TCP_DEFER_ACCEPT` to skip waking workers until request data arrives.
+Benchmarks for v3.8 (IOCP / io_uring / kqueue) are pending. v3.8 replaces the blocking thread pool with native async I/O on all platforms — IOCP on Windows, io_uring on Linux (with kernel 6.1+ `DEFER_TASKRUN` and multishot accept), kqueue on macOS/BSD. Expect similar or improved throughput at high concurrency with lower CPU utilization.
 
 ### Resource usage (v3.7, Windows, 4-core machine)
 
