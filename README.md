@@ -41,14 +41,16 @@ make
 
 ## Benchmarks
 
-Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.4 release binary):
+Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.5 release binary):
 
-| Endpoint      | Req/sec  | Latency avg | p50      | p99      | Throughput  |
-|---------------|----------|-------------|----------|----------|-------------|
-| `/`           | ~33,700  | 2.95 ms     | 2.54 ms  | 15.3 ms  | 100 MB/s    |
-| `/index.html` | ~35,100  | 2.86 ms     | 2.56 ms  | 11.2 ms  | 104 MB/s    |
+| Endpoint      | Req/sec  | Latency avg | p99      | Throughput  |
+|---------------|----------|-------------|----------|-------------|
+| `/`           | ~47,900  | 2.0 ms      | 17.2 ms  | 144 MB/s    |
+| `/index.html` | ~33,300  | 3.0 ms      | 15.9 ms  | 99 MB/s     |
 
-### Resource usage (v3.4, Windows, 4-core machine)
+**+42% over v3.4** (33,700 → 47,900 RPS). Pre-cached response headers eliminated `snprintf`/`strlen` and the header `send()` call on every cache hit. Atomic `last_checked` removed the write-lock upgrade in the mtime-check path. `TCP_NODELAY` and removing `memset` cut per-request overhead further.
+
+### Resource usage (v3.5, Windows, 4-core machine)
 
 | Metric                        | Value           |
 |-------------------------------|-----------------|
@@ -57,6 +59,8 @@ Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 �
 | CPU — under full benchmark load | ~15% total (61% of 1 core) |
 
 The server is nearly CPU-idle at rest and uses under 6 MB of RAM with no files cached. Under 100-connection benchmark load it consumes about one CPU core out of four.
+
+**Binary size**: ~180 KB (Windows, MSVC release build)
 
 ### Running the benchmark yourself
 ```bash
