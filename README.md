@@ -10,7 +10,7 @@ A minimalist static file server written in C.
 - **HTTP keep-alive**: connections are reused across requests — no TCP handshake per request
 - **mtime cache**: files cached in memory, reloaded only on change (up to 64 entries, 1s re-check interval)
 - **Zero-copy cache hits**: serves directly from cached buffer under read lock — no malloc/memcpy per request
-- **Thread pool**: 32 pre-created workers, ring-buffer queue (256 slots) — no per-request thread creation
+- **Thread pool**: 128 pre-created workers, ring-buffer queue (512 slots) — no per-request thread creation
 - **CLI arguments**: configurable port and serve directory
 - **Directory traversal protection**: `..` in paths returns 403
 - **Small footprint**: ~12 KB binary (Windows)
@@ -41,14 +41,22 @@ make
 
 ## Benchmarks
 
-Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.3 release binary):
+Load test using [Bombardier](https://github.com/codesenberg/bombardier) v1.2.6 — 100 concurrent connections, 10 seconds, Windows (v3.4 release binary):
 
-| Endpoint      | Req/sec  | Latency avg | p50      | p99     | Throughput  |
-|---------------|----------|-------------|----------|---------|-------------|
-| `/`           | ~40,700  | 2.5 ms      | 0.57 ms  | 5.9 ms  | 118 MB/s    |
-| `/index.html` | ~42,700  | 2.4 ms      | 0.55 ms  | 6.2 ms  | 125 MB/s    |
+| Endpoint      | Req/sec  | Latency avg | p50      | p99      | Throughput  |
+|---------------|----------|-------------|----------|----------|-------------|
+| `/`           | ~33,700  | 2.95 ms     | 2.54 ms  | 15.3 ms  | 100 MB/s    |
+| `/index.html` | ~35,100  | 2.86 ms     | 2.56 ms  | 11.2 ms  | 104 MB/s    |
 
-**120× improvement over v3.2** (338 → 40,700 RPS). The bottleneck was TCP connection setup/teardown per request — keep-alive eliminated it. Zero-copy cache serving and skipping `stat()` on fresh entries removed the remaining per-request overhead.
+### Resource usage (v3.4, Windows, 4-core machine)
+
+| Metric                        | Value           |
+|-------------------------------|-----------------|
+| Memory — idle (working set)   | ~5.4 MB         |
+| Memory — under load           | ~5.9 MB         |
+| CPU — under full benchmark load | ~15% total (61% of 1 core) |
+
+The server is nearly CPU-idle at rest and uses under 6 MB of RAM with no files cached. Under 100-connection benchmark load it consumes about one CPU core out of four.
 
 ### Running the benchmark yourself
 ```bash
