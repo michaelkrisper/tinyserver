@@ -1,3 +1,6 @@
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,12 +11,11 @@
 #define MAX_REQ       2048
 #define MAX_FILE_SIZE (10 * 1024 * 1024)
 #define CACHE_CAP            64
-#define MTIME_CHECK_INTERVAL  1   /* seconds between mtime re-checks */
+#define MTIME_CHECK_INTERVAL  10   /* seconds between mtime re-checks */
 #define POOL_SIZE     128
 #define QUEUE_CAP     512
 
 #ifdef _WIN32
-#define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <direct.h>
 #include <windows.h>
@@ -117,8 +119,34 @@ static inline time_t atomic_time_load(const atomic_time_t *p) {
 }
 #endif
 
-/* --- Shared clock: background thread updates g_now every second ---------- */
+/* --- Shared clock + Date header ----------------------------------------- */
 static volatile time_t g_now;
+static char            g_date_hdr[48]; /* "Date: Mon, 16 Mar 2026 12:00:01 GMT\r\n\r\n" */
+static int             g_date_hdr_len;
+
+static void gmtime_safe(time_t t, struct tm *out) {
+#ifdef _WIN32
+  gmtime_s(out, &t);
+#else
+  gmtime_r(&t, out);
+#endif
+}
+
+static void update_date_hdr(time_t t) {
+  struct tm tm_buf;
+  gmtime_safe(t, &tm_buf);
+  char tmp[48];
+  int len = (int)strftime(tmp, sizeof(tmp),
+                           "Date: %a, %d %b %Y %H:%M:%S GMT\r\n\r\n", &tm_buf);
+  memcpy(g_date_hdr, tmp, (size_t)len + 1);
+  g_date_hdr_len = len;
+}
+
+static void format_http_date(time_t t, char *buf, size_t size) {
+  struct tm tm_buf;
+  gmtime_safe(t, &tm_buf);
+  strftime(buf, size, "%a, %d %b %Y %H:%M:%S GMT", &tm_buf);
+}
 
 static THREAD_RET clock_thread(void *_) {
   (void)_;
@@ -128,7 +156,9 @@ static THREAD_RET clock_thread(void *_) {
 #else
     sleep(1);
 #endif
-    g_now = time(NULL);
+    time_t now = time(NULL);
+    g_now = now;
+    update_date_hdr(now);
   }
   return THREAD_RET_VAL;
 }
@@ -148,9 +178,9 @@ typedef struct {
   size_t size;
   time_t mtime;
   atomic_time_t last_checked;
-  char   header_ka[256];  /* pre-built "Connection: keep-alive" header */
+  char   header_ka[320];  /* pre-built "Connection: keep-alive" header (no final blank line) */
   int    header_ka_len;
-  char   header_cl[256];  /* pre-built "Connection: close" header */
+  char   header_cl[320];  /* pre-built "Connection: close" header (no final blank line) */
   int    header_cl_len;
 } CacheEntry;
 
@@ -159,25 +189,39 @@ static int        g_cache_n;
 
 const char *mime_type(const char *path);
 
-/* Scatter-gather send: header + body in one syscall */
+/* Scatter-gather: [status+headers] + [Date:\r\n\r\n] + [optional body]
+   Header string must NOT include the trailing blank line — g_date_hdr provides it. */
 static void send_response(SOCKET client, const char *header, int header_len,
                            const char *data, size_t size) {
 #ifdef _WIN32
-  WSABUF bufs[2];
-  bufs[0].buf = (CHAR *)header; bufs[0].len = (ULONG)header_len;
-  bufs[1].buf = (CHAR *)data;   bufs[1].len = (ULONG)size;
+  WSABUF bufs[3];
+  bufs[0].buf = (CHAR *)header;     bufs[0].len = (ULONG)header_len;
+  bufs[1].buf = (CHAR *)g_date_hdr; bufs[1].len = (ULONG)g_date_hdr_len;
   DWORD sent;
-  WSASend(client, bufs, 2, &sent, 0, NULL, NULL);
+  if (size > 0) {
+    bufs[2].buf = (CHAR *)data; bufs[2].len = (ULONG)size;
+    WSASend(client, bufs, 3, &sent, 0, NULL, NULL);
+  } else {
+    WSASend(client, bufs, 2, &sent, 0, NULL, NULL);
+  }
 #else
-  struct iovec iov[2];
-  iov[0].iov_base = (void *)header; iov[0].iov_len = (size_t)header_len;
-  iov[1].iov_base = (void *)data;   iov[1].iov_len = size;
-  writev(client, iov, 2);
+  struct iovec iov[3];
+  iov[0].iov_base = (void *)header;     iov[0].iov_len = (size_t)header_len;
+  iov[1].iov_base = (void *)g_date_hdr; iov[1].iov_len = (size_t)g_date_hdr_len;
+  if (size > 0) {
+    iov[2].iov_base = (void *)data; iov[2].iov_len = size;
+    writev(client, iov, 3);
+  } else {
+    writev(client, iov, 2);
+  }
 #endif
 }
 
+static const char hdr_304_ka[] = "HTTP/1.1 304 Not Modified\r\nConnection: keep-alive\r\n";
+static const char hdr_304_cl[] = "HTTP/1.1 304 Not Modified\r\nConnection: close\r\n";
+
 /* Serves path to client directly from cache. Returns 1 on success, 0 on error. */
-static int cache_serve(const char *path, SOCKET client, int keep_alive) {
+static int cache_serve(const char *path, SOCKET client, int keep_alive, time_t ims) {
   time_t now = g_now;  /* shared clock — no syscall */
 
   /* Fast path: entry is fresh — skip stat, send under read lock (no copy) */
@@ -186,10 +230,17 @@ static int cache_serve(const char *path, SOCKET client, int keep_alive) {
     CacheEntry *e = &g_cache[i];
     if (strcmp(e->path, path) == 0 &&
         now - atomic_time_load(&e->last_checked) < MTIME_CHECK_INTERVAL) {
-      send_response(client,
-                    keep_alive ? e->header_ka : e->header_cl,
-                    keep_alive ? e->header_ka_len : e->header_cl_len,
-                    e->data, e->size);
+      if (ims && ims >= e->mtime) {
+        send_response(client,
+                      keep_alive ? hdr_304_ka : hdr_304_cl,
+                      keep_alive ? (int)(sizeof(hdr_304_ka)-1) : (int)(sizeof(hdr_304_cl)-1),
+                      NULL, 0);
+      } else {
+        send_response(client,
+                      keep_alive ? e->header_ka : e->header_cl,
+                      keep_alive ? e->header_ka_len : e->header_cl_len,
+                      e->data, e->size);
+      }
       cache_runlock();
       return 1;
     }
@@ -206,10 +257,17 @@ static int cache_serve(const char *path, SOCKET client, int keep_alive) {
   for (int i = 0; i < g_cache_n; i++) {
     CacheEntry *e = &g_cache[i];
     if (strcmp(e->path, path) == 0 && e->mtime == st.st_mtime) {
-      send_response(client,
-                    keep_alive ? e->header_ka : e->header_cl,
-                    keep_alive ? e->header_ka_len : e->header_cl_len,
-                    e->data, e->size);
+      if (ims && ims >= e->mtime) {
+        send_response(client,
+                      keep_alive ? hdr_304_ka : hdr_304_cl,
+                      keep_alive ? (int)(sizeof(hdr_304_ka)-1) : (int)(sizeof(hdr_304_cl)-1),
+                      NULL, 0);
+      } else {
+        send_response(client,
+                      keep_alive ? e->header_ka : e->header_cl,
+                      keep_alive ? e->header_ka_len : e->header_cl_len,
+                      e->data, e->size);
+      }
       atomic_time_store(&e->last_checked, now);
       cache_runlock();
       return 1;
@@ -225,16 +283,27 @@ static int cache_serve(const char *path, SOCKET client, int keep_alive) {
   size_t n = fread(data, 1, (size_t)st.st_size, f);
   fclose(f);
 
-  char hdr_ka[256], hdr_cl[256];
-  int hdr_ka_len = snprintf(hdr_ka, sizeof(hdr_ka),
-    "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nConnection: keep-alive\r\n\r\n",
-    mime_type(path), (unsigned long)n);
-  int hdr_cl_len = snprintf(hdr_cl, sizeof(hdr_cl),
-    "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n",
-    mime_type(path), (unsigned long)n);
+  char lm[32];
+  format_http_date(st.st_mtime, lm, sizeof(lm));
 
-  send_response(client, keep_alive ? hdr_ka : hdr_cl,
-                         keep_alive ? hdr_ka_len : hdr_cl_len, data, n);
+  /* Pre-build headers without trailing blank line (g_date_hdr provides it at send time) */
+  char hdr_ka[320], hdr_cl[320];
+  int hdr_ka_len = snprintf(hdr_ka, sizeof(hdr_ka),
+    "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nLast-Modified: %s\r\nConnection: keep-alive\r\n",
+    mime_type(path), (unsigned long)n, lm);
+  int hdr_cl_len = snprintf(hdr_cl, sizeof(hdr_cl),
+    "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nLast-Modified: %s\r\nConnection: close\r\n",
+    mime_type(path), (unsigned long)n, lm);
+
+  if (ims && ims >= st.st_mtime) {
+    send_response(client,
+                  keep_alive ? hdr_304_ka : hdr_304_cl,
+                  keep_alive ? (int)(sizeof(hdr_304_ka)-1) : (int)(sizeof(hdr_304_cl)-1),
+                  NULL, 0);
+  } else {
+    send_response(client, keep_alive ? hdr_ka : hdr_cl,
+                           keep_alive ? hdr_ka_len : hdr_cl_len, data, n);
+  }
 
   cache_wlock();
   int slot = g_cache_n < CACHE_CAP ? g_cache_n++ : 0;
@@ -278,10 +347,33 @@ const char *mime_type(const char *path) {
   return "application/octet-stream";
 }
 
+/* --- Parse HTTP date (RFC 7231 format) ---------------------------------- */
+static time_t parse_http_date(const char *s) {
+  struct tm tm = {0};
+  char month[4] = {0};
+  if (sscanf(s, "%*3s, %d %3s %d %d:%d:%d GMT",
+             &tm.tm_mday, month, &tm.tm_year,
+             &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) return 0;
+  static const char *months[] = {
+    "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"
+  };
+  tm.tm_mon = -1;
+  for (int i = 0; i < 12; i++)
+    if (strncmp(month, months[i], 3) == 0) { tm.tm_mon = i; break; }
+  if (tm.tm_mon < 0) return 0;
+  tm.tm_year -= 1900;
+#ifdef _WIN32
+  return _mkgmtime(&tm);
+#else
+  return timegm(&tm);
+#endif
+}
+
 /* --- Single-pass request parser ----------------------------------------- */
 /* Returns 0=ok, -403=forbidden, -405=method not allowed.
-   Fills path[] and *keep_alive on success. */
-static int parse_request(const char *buf, char *path, size_t path_cap, int *keep_alive) {
+   Fills path[], *keep_alive, and *ims (If-Modified-Since, 0 if absent) on success. */
+static int parse_request(const char *buf, char *path, size_t path_cap,
+                          int *keep_alive, time_t *ims) {
   if (strncmp(buf, "GET ", 4) != 0) return -405;
 
   /* Extract path; detect ".." in one scan */
@@ -305,13 +397,16 @@ static int parse_request(const char *buf, char *path, size_t path_cap, int *keep
   while (*p && *p != '\n') p++;
   if (*p) p++;
 
-  /* Scan headers for Connection: (stop at blank line) */
+  /* Scan headers in one pass (stop at blank line) */
   int conn_close = 0, conn_ka = 0;
+  *ims = 0;
   while (*p && !(*p == '\r' || *p == '\n')) {
     if (strncmp(p, "Connection: ", 12) == 0) {
       p += 12;
       if      (strncmp(p, "keep-alive", 10) == 0) conn_ka    = 1;
       else if (strncmp(p, "close",       5) == 0) conn_close = 1;
+    } else if (strncmp(p, "If-Modified-Since: ", 19) == 0) {
+      *ims = parse_http_date(p + 19);
     }
     while (*p && *p != '\n') p++;
     if (*p) p++;
@@ -322,6 +417,10 @@ static int parse_request(const char *buf, char *path, size_t path_cap, int *keep
 }
 
 /* --- Connection handler -------------------------------------------------- */
+static const char hdr_403[] = "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n";
+static const char hdr_404[] = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n";
+static const char hdr_405[] = "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n";
+
 void handle_client(SOCKET client) {
 #ifdef _WIN32
   DWORD tv = 5000;
@@ -338,23 +437,24 @@ void handle_client(SOCKET client) {
     if (nr <= 0) break;
     buffer[nr] = '\0';
 
-    char path[512];
-    int  keep_alive;
-    int  status = parse_request(buffer, path, sizeof(path), &keep_alive);
+    char   path[512];
+    int    keep_alive;
+    time_t ims;
+    int    status = parse_request(buffer, path, sizeof(path), &keep_alive, &ims);
 
     if (status == -405) {
-      send(client, "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\nMethod Not Allowed", 73, 0);
+      send_response(client, hdr_405, (int)(sizeof(hdr_405)-1), "Method Not Allowed", 18);
       break;
     }
     if (status == -403) {
-      send(client, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden", 55, 0);
+      send_response(client, hdr_403, (int)(sizeof(hdr_403)-1), "Forbidden", 9);
       break;
     }
 
     const char *local_path = (path[0] == '/' && path[1] == '\0') ? "index.html" : path + 1;
 
-    if (!cache_serve(local_path, client, keep_alive)) {
-      send(client, "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nNot Found", 55, 0);
+    if (!cache_serve(local_path, client, keep_alive, ims)) {
+      send_response(client, hdr_404, (int)(sizeof(hdr_404)-1), "Not Found", 9);
       break;
     }
 
@@ -377,6 +477,9 @@ static THREAD_RET worker_thread(void *arg) {
   int opt = 1;
   setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
   setsockopt(srv, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+#ifdef TCP_DEFER_ACCEPT
+  setsockopt(srv, IPPROTO_TCP, TCP_DEFER_ACCEPT, &opt, sizeof(opt));
+#endif
 
   struct sockaddr_in addr = {0};
   addr.sin_family      = AF_INET;
@@ -470,7 +573,9 @@ int main(int argc, char *argv[]) {
   }
 
   cache_lock_init();
-  g_now = time(NULL);
+  time_t now = time(NULL);
+  g_now = now;
+  update_date_hdr(now);
   start_clock();
 
   if (os_chdir(serve_dir) != 0) {
@@ -488,7 +593,7 @@ int main(int argc, char *argv[]) {
   start_pool(port);
 
   printf("Serving files from: %s\n", serve_dir);
-  printf("Tiny C Web Server listening on http://localhost:%d\n", port);
+  printf("Tiny Web Server listening on http://localhost:%d\n", port);
   printf("Press Ctrl+C to exit.\n");
 
 #ifdef __linux__
