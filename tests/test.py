@@ -1,7 +1,6 @@
 import unittest
 import urllib.request
 import urllib.error
-
 import os
 
 URL = os.environ.get("SERVER_URL", "http://localhost:80")
@@ -9,75 +8,51 @@ URL = os.environ.get("SERVER_URL", "http://localhost:80")
 class TestTinyServer(unittest.TestCase):
     def test_01_get_root(self):
         """Test getting the root path /"""
-        req = urllib.request.Request(URL)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(URL) as response:
             body = response.read()
-            self.assertEqual(response.status, 200, f"Expected 200, got {response.status}. Body: {body}")
-            self.assertIn(b"html", body.lower(), f"Expected HTML content, got: {body}")
-            self.assertIsNotNone(response.headers.get('ETag'), "ETag missing on /")
+            self.assertEqual(response.status, 200)
+            self.assertIn(b"html", body.lower())
 
     def test_02_get_index(self):
         """Test explicitly getting /index.html"""
-        req = urllib.request.Request(URL + "/index.html")
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(URL + "/index.html") as response:
             body = response.read()
-            self.assertEqual(response.status, 200, f"Expected 200, got {response.status}. Body: {body}")
+            self.assertEqual(response.status, 200)
             self.assertIn(b"html", body.lower())
 
-    def test_03_get_favicon(self):
-        """Test that /favicon.ico returns 204 No Content for browser optimization"""
-        req = urllib.request.Request(URL + "/favicon.ico")
-        with urllib.request.urlopen(req) as response:
-            self.assertEqual(response.status, 204)
-            self.assertEqual(response.read(), b"")
-
-    def test_04_404_not_found(self):
-        """Test that random paths correctly return 404 Not Found"""
-        req = urllib.request.Request(URL + "/doesnotexist")
+    def test_03_404_not_found(self):
+        """Test that missing paths return 404"""
         try:
-            urllib.request.urlopen(req)
+            urllib.request.urlopen(URL + "/doesnotexist")
             self.fail("Expected 404, but request succeeded")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
 
-    def test_05_405_method_not_allowed(self):
-        """Test that POST methods are explicitly blocked with 405 Method Not Allowed"""
-        req = urllib.request.Request(URL, data=b"post_data", method="POST")
+    def test_04_405_method_not_allowed(self):
+        """Test that POST requests return 405"""
         try:
-            urllib.request.urlopen(req)
+            urllib.request.urlopen(urllib.request.Request(URL, data=b"x", method="POST"))
             self.fail("Expected 405, but request succeeded")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 405)
 
-    def test_06_etag_caching(self):
-        """Test caching mechanism yielding a 304 Not Modified status"""
-        # First request fetches ETag
-        req1 = urllib.request.Request(URL)
-        with urllib.request.urlopen(req1) as response:
-            etag = response.headers.get('ETag')
-            
-        self.assertIsNotNone(etag, "ETag header is missing in response from /")
-
-        # Second request mimics browser sending back If-None-Match
-        req2 = urllib.request.Request(URL)
-        req2.add_header("If-None-Match", etag)
+    def test_05_403_directory_traversal(self):
+        """Test that directory traversal attempts return 403"""
         try:
-            urllib.request.urlopen(req2)
-            self.fail("Expected 304 Not Modified, but request succeeded")
+            urllib.request.urlopen(URL + "/../etc/passwd")
+            self.fail("Expected 403, but request succeeded")
         except urllib.error.HTTPError as e:
-            self.assertEqual(e.code, 304)
+            self.assertEqual(e.code, 403)
 
-    def test_07_etag_spoofing_defense(self):
-        """Test that caching ignores the ETag if it's spoofed into the wrong header (e.g. User-Agent)"""
-        req1 = urllib.request.Request(URL)
-        with urllib.request.urlopen(req1) as response:
-            etag = response.headers.get('ETag')
+    def test_06_content_type_html(self):
+        """Test that HTML files are served with the correct Content-Type"""
+        with urllib.request.urlopen(URL + "/index.html") as response:
+            ct = response.headers.get("Content-Type", "")
+            self.assertIn("text/html", ct)
 
-        self.assertIsNotNone(etag, "ETag header is missing in response from /")
-
-        req2 = urllib.request.Request(URL)
-        req2.add_header("User-Agent", etag) # Fake placement
-        with urllib.request.urlopen(req2) as response:
+    def test_07_query_string_ignored(self):
+        """Test that query strings are stripped and the file is still served"""
+        with urllib.request.urlopen(URL + "/?v=123") as response:
             self.assertEqual(response.status, 200)
 
 if __name__ == '__main__':

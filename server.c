@@ -1,255 +1,215 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <time.h>
-#define PORT 80
-#define FILE_NAME "index.html"
+
+#define DEFAULT_PORT 80
 #define MAX_REQ 2048
-#define MAX_CACHE_SIZE (2 * 1024 * 1024)
-
-typedef struct {
-  char data[MAX_CACHE_SIZE];
-  size_t size;
-  char etag[64];
-  time_t last_mtime;
-} CacheEntry;
-
-CacheEntry g_cache = {0};
+#define MAX_FILE_SIZE (10 * 1024 * 1024)
 
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
+#include <direct.h>
 #include <windows.h>
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
+#define os_chdir _chdir
 
-SRWLOCK g_cache_lock;
-#define RWLOCK_INIT() InitializeSRWLock(&g_cache_lock)
-#define READ_LOCK() AcquireSRWLockShared(&g_cache_lock)
-#define READ_UNLOCK() ReleaseSRWLockShared(&g_cache_lock)
-#define WRITE_LOCK() AcquireSRWLockExclusive(&g_cache_lock)
-#define WRITE_UNLOCK() ReleaseSRWLockExclusive(&g_cache_lock)
-#define RWLOCK_DESTROY()
-
-void os_net_init() {
-  WSADATA wsa;
-  WSAStartup(MAKEWORD(2, 2), &wsa);
-}
-
-void os_net_cleanup() { WSACleanup(); }
-
-void os_set_socket_timeout(SOCKET client, int seconds) {
-  DWORD timeout = seconds * 1000;
-  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
-}
-
-void handle_client(SOCKET client);
-
-DWORD WINAPI client_thread_wrapper(LPVOID arg) {
-  SOCKET client = (SOCKET)(intptr_t)arg;
-  handle_client(client);
-  return 0;
-}
-
-void os_start_client_thread(SOCKET client) {
-  HANDLE thread = CreateThread(NULL, 0, client_thread_wrapper, (void *)(intptr_t)client, 0, NULL);
-  if (thread) {
-    CloseHandle(thread);
-  } else {
-    closesocket(client);
-  }
+void get_exe_dir(const char *argv0, char *dir, size_t size) {
+  (void)argv0;
+  GetModuleFileNameA(NULL, dir, (DWORD)size);
+  char *sep = strrchr(dir, '\\');
+  if (!sep) sep = strrchr(dir, '/');
+  if (sep) *sep = '\0';
+  else { dir[0] = '.'; dir[1] = '\0'; }
 }
 
 #else
-// --- POSIX (Linux/macOS) Implementation ---
-
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdint.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
 #define SOCKET int
 #define INVALID_SOCKET (-1)
 #define SOCKET_ERROR (-1)
 #define closesocket(s) close(s)
+#define os_chdir chdir
 
-pthread_rwlock_t g_cache_lock = PTHREAD_RWLOCK_INITIALIZER;
-#define RWLOCK_INIT() ((void)0)
-#define READ_LOCK() pthread_rwlock_rdlock(&g_cache_lock)
-#define READ_UNLOCK() pthread_rwlock_unlock(&g_cache_lock)
-#define WRITE_LOCK() pthread_rwlock_wrlock(&g_cache_lock)
-#define WRITE_UNLOCK() pthread_rwlock_unlock(&g_cache_lock)
-#define RWLOCK_DESTROY() pthread_rwlock_destroy(&g_cache_lock)
-
-void os_net_init() { signal(SIGPIPE, SIG_IGN); }
-void os_net_cleanup() {}
-
-void os_set_socket_timeout(SOCKET client, int seconds) {
-  struct timeval timeout;
-  timeout.tv_sec = seconds;
-  timeout.tv_usec = 0;
-  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const void *)&timeout, sizeof(timeout));
+void get_exe_dir(const char *argv0, char *dir, size_t size) {
+  strncpy(dir, argv0, size - 1);
+  dir[size - 1] = '\0';
+  char *sep = strrchr(dir, '/');
+  if (sep) *sep = '\0';
+  else { dir[0] = '.'; dir[1] = '\0'; }
 }
 
-void handle_client(SOCKET client);
-
-void *client_thread_wrapper(void *arg) {
-  SOCKET client = (SOCKET)(intptr_t)arg;
-  handle_client(client);
-  return NULL;
-}
-
-void os_start_client_thread(SOCKET client) {
-  pthread_t thread;
-  if (pthread_create(&thread, NULL, client_thread_wrapper, (void *)(intptr_t)client) == 0) {
-    pthread_detach(thread);
-  } else {
-    closesocket(client);
-  }
-}
-
-#endif
-
-#ifdef _WIN32
-#define STAT_STR struct _stat
-#define STAT_FUNC _stat
-#else
-#define STAT_STR struct stat
-#define STAT_FUNC stat
 static int fopen_s(FILE **f, const char *name, const char *mode) {
   *f = fopen(name, mode);
   return *f ? 0 : -1;
 }
 #endif
 
-void update_cache() {
-  STAT_STR st;
-  if (STAT_FUNC(FILE_NAME, &st) == 0) {
-    int needs_update = 0;
-
-    READ_LOCK();
-    if (st.st_mtime != g_cache.last_mtime || g_cache.size == 0) {
-      needs_update = 1;
-    }
-    READ_UNLOCK();
-
-    if (needs_update) {
-      FILE *f = NULL;
-      if (fopen_s(&f, FILE_NAME, "rb") == 0) {
-        WRITE_LOCK();
-        if (st.st_mtime != g_cache.last_mtime || g_cache.size == 0) {
-          g_cache.size = fread(g_cache.data, 1, (size_t)st.st_size > MAX_CACHE_SIZE ? MAX_CACHE_SIZE : (size_t)st.st_size, f);
-          g_cache.last_mtime = st.st_mtime;
-          snprintf(g_cache.etag, sizeof(g_cache.etag), "W/\"%llx-%zx\"", (unsigned long long)g_cache.last_mtime, g_cache.size);
-          printf("[Cache] Loaded %s into RAM (%zu bytes), ETag: %s\n", FILE_NAME, g_cache.size, g_cache.etag);
-        }
-        WRITE_UNLOCK();
-        fclose(f);
-      }
-    }
-  }
+const char *mime_type(const char *path) {
+  static const struct { const char *ext, *type; } map[] = {
+    {".html","text/html; charset=utf-8"}, {".htm","text/html; charset=utf-8"},
+    {".css", "text/css"},
+    {".js",  "application/javascript"},  {".json","application/json"},
+    {".txt", "text/plain; charset=utf-8"},{".xml", "application/xml"},
+    {".png", "image/png"},
+    {".jpg", "image/jpeg"},              {".jpeg","image/jpeg"},
+    {".gif", "image/gif"},               {".svg", "image/svg+xml"},
+    {".ico", "image/x-icon"},            {".webp","image/webp"},
+    {".pdf", "application/pdf"},
+    {".woff","font/woff"},               {".woff2","font/woff2"}, {".ttf","font/ttf"},
+    {".mp3", "audio/mpeg"},
+    {".mp4", "video/mp4"},               {".webm","video/webm"},
+    {".zip", "application/zip"},
+  };
+  const char *ext = strrchr(path, '.');
+  if (ext)
+    for (size_t i = 0; i < sizeof(map) / sizeof(*map); i++)
+      if (strcmp(ext, map[i].ext) == 0) return map[i].type;
+  return "application/octet-stream";
 }
 
+#define RESPOND(c, msg) do { send(c, msg, (int)strlen(msg), 0); closesocket(c); return; } while(0)
+
 void handle_client(SOCKET client) {
+#ifdef _WIN32
+  DWORD tv = 2000;
+#else
+  struct timeval tv = {2, 0};
+#endif
+  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+
   char buffer[MAX_REQ] = {0};
-
-  os_set_socket_timeout(client, 2);
-
   int received = recv(client, buffer, sizeof(buffer) - 1, 0);
-  if (received > 0) {
-    buffer[received] = '\0';
+  if (received <= 0) { closesocket(client); return; }
+  buffer[received] = '\0';
 
-    if (strncmp(buffer, "GET ", 4) != 0) {
-      const char *bad_req = "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\nMethod Not Allowed";
-      send(client, bad_req, (int)strlen(bad_req), 0);
-      closesocket(client);
-      return;
-    }
+  if (strncmp(buffer, "GET ", 4) != 0)
+    RESPOND(client, "HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\nMethod Not Allowed");
 
-    char *path_start = buffer + 4;
+  char path[512] = {0};
+  char *path_end = strchr(buffer + 4, ' ');
+  if (!path_end) { closesocket(client); return; }
+  size_t path_len = (size_t)(path_end - (buffer + 4));
+  if (path_len >= sizeof(path)) path_len = sizeof(path) - 1;
+  strncpy(path, buffer + 4, path_len);
 
-    if (strncmp(path_start, "/favicon.ico ", 13) == 0) {
-      const char *no_favicon = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
-      send(client, no_favicon, (int)strlen(no_favicon), 0);
-      closesocket(client);
-      return;
-    }
+  char *q = strchr(path, '?');
+  if (q) *q = '\0';
 
-    if (strncmp(path_start, "/ ", 2) != 0 && strncmp(path_start, "/index.html ", 12) != 0) {
-      const char *not_found = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nNot Found";
-      send(client, not_found, (int)strlen(not_found), 0);
-      closesocket(client);
-      return;
-    }
+  if (strstr(path, ".."))
+    RESPOND(client, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\nForbidden");
 
-    update_cache();
+  const char *local_path = (strcmp(path, "/") == 0) ? "index.html" : path + 1;
 
-    READ_LOCK();
-    int not_modified = 0;
-    if (g_cache.etag[0] != '\0') {
-      char expected_match[128];
-      snprintf(expected_match, sizeof(expected_match), "\r\nIf-None-Match: %s", g_cache.etag);
-      not_modified = (strstr(buffer, expected_match) != NULL);
-    }
+  FILE *f = NULL;
+  if (fopen_s(&f, local_path, "rb") != 0)
+    RESPOND(client, "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nNot Found");
 
-    char header[512];
-    if (not_modified) {
-      snprintf(header, sizeof(header), "HTTP/1.1 304 Not Modified\r\nETag: %s\r\nConnection: close\r\n\r\n", g_cache.etag);
-      send(client, header, (int)strlen(header), 0);
-    } else if (g_cache.size > 0) {
-      snprintf(header, sizeof(header),
-               "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %zu\r\nETag: %s\r\nConnection: close\r\n\r\n",
-               g_cache.size, g_cache.etag);
-      send(client, header, (int)strlen(header), 0);
-      send(client, g_cache.data, (int)g_cache.size, 0);
-    } else {
-      const char *not_found = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nFile index.html not found!";
-      send(client, not_found, (int)strlen(not_found), 0);
-    }
-    READ_UNLOCK();
+  fseek(f, 0, SEEK_END);
+  long file_size = ftell(f);
+  rewind(f);
+
+  if (file_size <= 0 || file_size > MAX_FILE_SIZE) {
+    fclose(f);
+    RESPOND(client, "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\nFile too large");
   }
 
+  char *data = malloc((size_t)file_size);
+  if (!data) {
+    fclose(f);
+    RESPOND(client, "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\nOut of memory");
+  }
+
+  size_t bytes_read = fread(data, 1, (size_t)file_size, f);
+  fclose(f);
+
+  char header[256];
+  snprintf(header, sizeof(header),
+           "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n",
+           mime_type(local_path), (unsigned long)bytes_read);
+  send(client, header, (int)strlen(header), 0);
+  send(client, data, (int)bytes_read, 0);
+  free(data);
   closesocket(client);
 }
 
-int main() {
-  os_net_init();
+#ifdef _WIN32
+DWORD WINAPI thread_entry(LPVOID arg) { handle_client((SOCKET)(intptr_t)arg); return 0; }
+void spawn_thread(SOCKET client) {
+  HANDLE t = CreateThread(NULL, 0, thread_entry, (void *)(intptr_t)client, 0, NULL);
+  if (t) CloseHandle(t);
+  else closesocket(client);
+}
+#else
+void *thread_entry(void *arg) { handle_client((SOCKET)(intptr_t)arg); return NULL; }
+void spawn_thread(SOCKET client) {
+  pthread_t t;
+  if (pthread_create(&t, NULL, thread_entry, (void *)(intptr_t)client) == 0)
+    pthread_detach(t);
+  else
+    closesocket(client);
+}
+#endif
 
-  RWLOCK_INIT();
-  update_cache();
+int main(int argc, char *argv[]) {
+  int port = DEFAULT_PORT;
+  char serve_dir[512];
+  get_exe_dir(argv[0], serve_dir, sizeof(serve_dir));
 
-  SOCKET server = socket(AF_INET, SOCK_STREAM, 0);
-  if (server == INVALID_SOCKET)
-    return 1;
+  if (argc >= 2) {
+    port = atoi(argv[1]);
+    if (port <= 0 || port > 65535) {
+      printf("Invalid port: %s\n", argv[1]);
+      return 1;
+    }
+  }
+  if (argc >= 3)
+    strncpy(serve_dir, argv[2], sizeof(serve_dir) - 1);
 
-  struct sockaddr_in addr;
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = INADDR_ANY;
-  addr.sin_port = htons(PORT);
-
-  if (bind(server, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-    printf("Bind failed. Port %d maybe in use?\n", PORT);
+  if (os_chdir(serve_dir) != 0) {
+    printf("Failed to change to directory: %s\n", serve_dir);
     return 1;
   }
 
-  if (listen(server, SOMAXCONN) == SOCKET_ERROR)
-    return 1;
+#ifdef _WIN32
+  WSADATA wsa;
+  WSAStartup(MAKEWORD(2, 2), &wsa);
+#else
+  signal(SIGPIPE, SIG_IGN);
+#endif
 
-  printf("Tiny C Web Server listening on http://localhost:%d\n", PORT);
+  SOCKET server = socket(AF_INET, SOCK_STREAM, 0);
+  if (server == INVALID_SOCKET) return 1;
+
+  int opt = 1;
+  setsockopt(server, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+
+  struct sockaddr_in addr = {0};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = INADDR_ANY;
+  addr.sin_port = htons((unsigned short)port);
+
+  if (bind(server, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
+    printf("Bind failed. Port %d maybe in use?\n", port);
+    return 1;
+  }
+
+  if (listen(server, SOMAXCONN) == SOCKET_ERROR) return 1;
+
+  printf("Serving files from: %s\n", serve_dir);
+  printf("Tiny C Web Server listening on http://localhost:%d\n", port);
   printf("Press Ctrl+C to exit.\n");
 
   while (1) {
     SOCKET client = accept(server, NULL, NULL);
-    if (client != INVALID_SOCKET) {
-      os_start_client_thread(client);
-    }
+    if (client != INVALID_SOCKET)
+      spawn_thread(client);
   }
-
-  RWLOCK_DESTROY();
-  closesocket(server);
-  os_net_cleanup();
-  return 0;
 }
